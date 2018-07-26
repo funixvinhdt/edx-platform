@@ -18,7 +18,13 @@ from courseware.access import has_access
 from django_comment_client.constants import TYPE_ENTRY, TYPE_SUBCATEGORY
 from django_comment_client.permissions import check_permissions_by_view, get_team, has_permission
 from django_comment_client.settings import MAX_COMMENT_DEPTH
-from django_comment_common.models import FORUM_ROLE_STUDENT, CourseDiscussionSettings, DiscussionsIdMapping, Role
+from django_comment_common.models import (
+    FORUM_ROLE_STUDENT,
+    FORUM_ROLE_COMMUNITY_TA,
+    CourseDiscussionSettings,
+    DiscussionsIdMapping,
+    Role
+)
 from django_comment_common.utils import get_course_discussion_settings
 from openedx.core.djangoapps.course_groups.cohorts import get_cohort_id, get_cohort_names, is_course_cohorted
 from openedx.core.djangoapps.request_cache.middleware import request_cached
@@ -99,6 +105,10 @@ def has_forum_access(uname, course_id, rolename):
     return role.users.filter(username=uname).exists()
 
 
+def is_user_community_ta(user, course_id):
+    return has_forum_access(user, course_id, FORUM_ROLE_COMMUNITY_TA)
+
+
 def has_required_keys(xblock):
     """
     Returns True iff xblock has the proper attributes for generating metadata
@@ -129,6 +139,8 @@ def get_accessible_discussion_xblocks_by_course_id(course_id, user=None, include
     Return a list of all valid discussion xblocks in this course.
     Checks for the given user's access if include_all is False.
     """
+    if getattr(user,'is_community_ta', False) is True:
+        include_all = True
     all_xblocks = modulestore().get_items(course_id, qualifiers={'category': 'discussion'}, include_orphans=False)
 
     return [
@@ -181,10 +193,16 @@ def get_cached_discussion_id_map(course, discussion_ids, user):
     Returns a dict mapping discussion_ids to respective discussion xblock metadata if it is cached and visible to the
     user. If not, returns the result of get_discussion_id_map
     """
-    return get_cached_discussion_id_map_by_course_id(course.id, discussion_ids, user)
+    kwargs = {"course_id": course.id, "discussion_ids": discussion_ids, "user": user}
+    is_forum_community_ta = has_forum_access(
+        user, course.id, FORUM_ROLE_COMMUNITY_TA
+    )
+    if is_forum_community_ta:
+        kwargs["include_all"] = True
+    return get_cached_discussion_id_map_by_course_id(**kwargs)
 
 
-def get_cached_discussion_id_map_by_course_id(course_id, discussion_ids, user):  # pylint: disable=invalid-name
+def get_cached_discussion_id_map_by_course_id(course_id, discussion_ids, user, include_all=False):  # pylint: disable=invalid-name
     """
     Returns a dict mapping discussion_ids to respective discussion xblock metadata if it is cached and visible to the
     user. If not, returns the result of get_discussion_id_map
@@ -196,12 +214,12 @@ def get_cached_discussion_id_map_by_course_id(course_id, discussion_ids, user): 
             if not key:
                 continue
             xblock = _get_item_from_modulestore(key)
-            if not (has_required_keys(xblock) and has_access(user, 'load', xblock, course_id)):
+            if not (has_required_keys(xblock) and (include_all or has_access(user, 'load', xblock, course_id))):
                 continue
             entries.append(get_discussion_id_map_entry(xblock))
         return dict(entries)
     except DiscussionIdMapIsNotCached:
-        return get_discussion_id_map_by_course_id(course_id, user)
+        return get_discussion_id_map_by_course_id(course_id, user, include_all)
 
 
 def get_discussion_id_map(course, user):
@@ -212,12 +230,12 @@ def get_discussion_id_map(course, user):
     return get_discussion_id_map_by_course_id(course.id, user)
 
 
-def get_discussion_id_map_by_course_id(course_id, user):  # pylint: disable=invalid-name
+def get_discussion_id_map_by_course_id(course_id, user, include_all=False):  # pylint: disable=invalid-name
     """
     Transform the list of this course's discussion xblocks (visible to a given user) into a dictionary of metadata keyed
     by discussion_id.
     """
-    xblocks = get_accessible_discussion_xblocks_by_course_id(course_id, user)
+    xblocks = get_accessible_discussion_xblocks_by_course_id(course_id, user, include_all)
     return dict(map(get_discussion_id_map_entry, xblocks))
 
 
@@ -422,7 +440,7 @@ def get_discussion_category_map(course, user, divided_only_if_explicit=False, ex
     return _filter_unstarted_categories(category_map, course) if exclude_unstarted else category_map
 
 
-def discussion_category_id_access(course, user, discussion_id, xblock=None):
+def discussion_category_id_access(course, user, discussion_id, xblock=None, include_discussion_id=False):
     """
     Returns True iff the given discussion_id is accessible for user in course.
     Assumes that the commentable identified by discussion_id has a null or 'course' context.
@@ -437,7 +455,7 @@ def discussion_category_id_access(course, user, discussion_id, xblock=None):
             if not key:
                 return False
             xblock = _get_item_from_modulestore(key)
-        return has_required_keys(xblock) and has_access(user, 'load', xblock, course.id)
+        return has_required_keys(xblock) and (include_discussion_id or has_access(user, 'load', xblock, course.id))
     except DiscussionIdMapIsNotCached:
         return discussion_id in get_discussion_categories_ids(course, user)
 

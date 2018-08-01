@@ -5,6 +5,7 @@ Unit tests for video-related REST APIs.
 import csv
 import json
 import re
+import requests
 from datetime import datetime
 from functools import wraps
 from StringIO import StringIO
@@ -16,11 +17,12 @@ from django.conf import settings
 from django.core.files.uploadedfile import UploadedFile
 from django.test.utils import override_settings
 from edxval.api import (
+    create_or_update_video_transcript,
     create_profile,
     create_video,
-    get_video_info,
     get_course_video_image_url,
-    create_or_update_video_transcript
+    get_video_info,
+    update_video_image
 )
 from mock import Mock, patch
 
@@ -30,8 +32,11 @@ from contentstore.utils import reverse_course_url
 from contentstore.views.videos import (
     _get_default_video_image_url,
     validate_video_image,
+    download_youtube_video_thumbnail,
+    scrape_youtube_thumbnails,
     VIDEO_IMAGE_UPLOAD_ENABLED,
     WAFFLE_SWITCHES,
+    YOUTUBE_THUMBNAIL_SIZES,
     TranscriptProvider
 )
 from contentstore.views.videos import KEY_EXPIRATION_IN_SECONDS, StatusDisplayStrings, convert_video_status
@@ -90,7 +95,7 @@ class VideoUploadTestBase(object):
         course_ids = [unicode(self.course.id), unicode(self.course2.id)]
         created = datetime.now(pytz.utc)
 
-        self.profiles = ["profile1", "profile2"]
+        self.profiles = ["profile1", "profile2", "youtube"]
         self.previous_uploads = [
             {
                 "edx_video_id": "test1",
@@ -139,6 +144,39 @@ class VideoUploadTestBase(object):
                     },
                 ]
             },
+            {
+                "edx_video_id": "test-youtube-video-1",
+                "client_video_id": "test-youtube-id.mp4",
+                "duration": 128.0,
+                "status": "file_complete",
+                "courses": course_ids,
+                "created": created,
+                "encoded_videos": [
+                    {
+                        "profile": "youtube",
+                        "url": "3_yD_cEKoCk",
+                        "file_size": 1600,
+                        "bitrate": 100,
+                    }
+                ],
+            },
+            {
+                "edx_video_id": "test-youtube-video-2",
+                "client_video_id": "test-youtube-id.mp4",
+                "image": 'image2.jpg',
+                "duration": 128.0,
+                "status": "file_complete",
+                "courses": course_ids,
+                "created": created,
+                "encoded_videos": [
+                    {
+                        "profile": "youtube",
+                        "url": "3_yD_cEKoCk",
+                        "file_size": 1600,
+                        "bitrate": 100,
+                    }
+                ],
+            },
         ]
         # Ensure every status string is tested
         self.previous_uploads += [
@@ -160,6 +198,12 @@ class VideoUploadTestBase(object):
             create_profile(profile)
         for video in self.previous_uploads:
             create_video(video)
+
+        # Create video images.
+        with make_image_file() as image_file:
+            update_video_image(
+                "test-youtube-video-2", unicode(self.course.id), image_file, "image.jpg"
+            )
 
     def _get_previous_upload(self, edx_video_id):
         """Returns the previous upload with the given video id."""
@@ -744,6 +788,29 @@ class VideoImageTestCase(VideoUploadTestBase, CourseTestCase):
         self.assertIn('error', response)
         self.assertEqual(response['error'], error_message)
 
+    def mocked_youtube_thumbnail_response(
+        self,
+        mocked_content=None,
+        error_response=False,
+        image_width=settings.VIDEO_IMAGE_MIN_WIDTH,
+        image_height=settings.VIDEO_IMAGE_MIN_HEIGHT
+    ):
+        """
+        Returns a mocked youtube thumbnail response.
+        """
+        image_content = ''
+        with make_image_file(dimensions=(image_width, image_height), ) as image_file:
+            image_content = image_file.read()
+
+        if mocked_content or error_response:
+            image_content = mocked_content
+
+        mocked_response = requests.Response()
+        mocked_response.status_code = requests.codes.ok if image_content else requests.codes.not_found  # pylint: disable=no-member
+        mocked_response._content = image_content    # pylint: disable=protected-access
+        mocked_response.headers = {'content-type': 'image/jpeg'}
+        return mocked_response
+
     @override_switch(VIDEO_IMAGE_UPLOAD_ENABLED, False)
     def test_video_image_upload_disabled(self):
         """
@@ -752,6 +819,205 @@ class VideoImageTestCase(VideoUploadTestBase, CourseTestCase):
         video_image_upload_url = self.get_url_for_course_key(self.course.id, {'edx_video_id': 'test_vid_id'})
         response = self.client.post(video_image_upload_url, {'file': 'dummy_file'}, format='multipart')
         self.assertEqual(response.status_code, 404)
+
+    @override_settings(AWS_ACCESS_KEY_ID='test_key_id', AWS_SECRET_ACCESS_KEY='test_secret')
+    @patch('requests.get')
+    @ddt.data(
+        (
+            {
+                'maxresdefault': 'maxresdefault-result-image-content',
+                'sddefault': 'sddefault-result-image-content',
+                'hqdefault': 'hqdefault-result-image-content',
+                'mqdefault': 'mqdefault-result-image-content',
+                'default': 'default-result-image-content'
+            },
+            'maxresdefault-result-image-content'
+        ),
+        (
+            {
+                'maxresdefault': '',
+                'sddefault': 'sddefault-result-image-content',
+                'hqdefault': 'hqdefault-result-image-content',
+                'mqdefault': 'mqdefault-result-image-content',
+                'default': 'default-result-image-content'
+            },
+            'sddefault-result-image-content'
+        ),
+        (
+            {
+                'maxresdefault': '',
+                'sddefault': '',
+                'hqdefault': 'hqdefault-result-image-content',
+                'mqdefault': 'mqdefault-result-image-content',
+                'default': 'default-result-image-content'
+            },
+            'hqdefault-result-image-content'
+        ),
+        (
+            {
+                'maxresdefault': '',
+                'sddefault': '',
+                'hqdefault': '',
+                'mqdefault': 'mqdefault-result-image-content',
+                'default': 'default-result-image-content'
+            },
+            'mqdefault-result-image-content'
+        ),
+        (
+            {
+                'maxresdefault': '',
+                'sddefault': '',
+                'hqdefault': '',
+                'mqdefault': '',
+                'default': 'default-result-image-content'
+            },
+            'default-result-image-content'
+        ),
+    )
+    @ddt.unpack
+    def test_youtube_video_thumbnail_download(
+        self,
+        thumbnail_content_data,
+        expected_thumbnail_content,
+        mocked_request
+    ):
+        """
+        Test that we get highest resolution video thumbnail available from youtube.
+        """
+        # Mock get youtube thumbnail responses.
+        def mocked_youtube_thumbnail_responses(resolutions):
+            """
+            Returns a list of mocked responses containing youtube thumbnails.
+            """
+            mocked_responses = []
+            for resolution in YOUTUBE_THUMBNAIL_SIZES:
+                mocked_content = resolutions.get(resolution, '')
+                error_response = False if mocked_content else True
+                mocked_responses.append(self.mocked_youtube_thumbnail_response(mocked_content, error_response))
+            return mocked_responses
+
+        mocked_request.side_effect = mocked_youtube_thumbnail_responses(thumbnail_content_data)
+
+        thumbnail_content, thumbnail_content_type = download_youtube_video_thumbnail('test-yt-id')
+
+        # Verify that we get the expected thumbnail content.
+        self.assertEqual(thumbnail_content, expected_thumbnail_content)
+        self.assertEqual(thumbnail_content_type, 'image/jpeg')
+
+    @override_settings(AWS_ACCESS_KEY_ID='test_key_id', AWS_SECRET_ACCESS_KEY='test_secret')
+    @patch('requests.get')
+    def test_scrape_youtube_thumbnails(self, mocked_request):
+        """
+        Test that youtube thumbnails are correctly scrapped.
+        """
+        course_id = unicode(self.course.id)
+        video1_edx_video_id = 'test-youtube-video-1'
+        video2_edx_video_id = 'test-youtube-video-2'
+
+        # Mock get youtube thumbnail responses.
+        mocked_request.side_effect = [self.mocked_youtube_thumbnail_response()]
+
+        # Verify that video1 has no image attached.
+        video1_image_url = get_course_video_image_url(course_id=course_id, edx_video_id=video1_edx_video_id)
+        self.assertIsNone(video1_image_url)
+
+        # Verify that video2 has already image attached.
+        video2_image_url = get_course_video_image_url(course_id=course_id, edx_video_id=video2_edx_video_id)
+        self.assertIsNotNone(video2_image_url)
+
+        # Scrape video thumbnails.
+        scrape_youtube_thumbnails([
+            (course_id, video1_edx_video_id, 'test-yt-id'),
+            (course_id, video2_edx_video_id, 'test-yt-id2'),
+        ])
+
+        # Verify that now video1 image is attached.
+        video1_image_url = get_course_video_image_url(course_id=course_id, edx_video_id=video1_edx_video_id)
+        self.assertIsNotNone(video1_image_url)
+
+        # Also verify that video2's image is not updated.
+        video2_image_url_latest = get_course_video_image_url(course_id=course_id, edx_video_id=video2_edx_video_id)
+        self.assertEqual(video2_image_url, video2_image_url_latest)
+
+    @ddt.data(
+        (
+            100,
+            100,
+            False
+        ),
+        (
+            640,
+            360,
+            True
+        )
+    )
+    @override_settings(AWS_ACCESS_KEY_ID='test_key_id', AWS_SECRET_ACCESS_KEY='test_secret')
+    @patch('contentstore.views.videos.LOGGER')
+    @patch('requests.get')
+    @ddt.unpack
+    def test_scrape_youtube_thumbnails_logging(
+        self,
+        image_width,
+        image_height,
+        is_success,
+        mocked_request,
+        mock_logger
+    ):
+        """
+        Test that we get correct logs in case of failure as well as success.
+        """
+        course_id = unicode(self.course.id)
+        video1_edx_video_id = 'test-youtube-video-1'
+        mocked_request.side_effect = [
+            self.mocked_youtube_thumbnail_response(
+                image_width=image_width,
+                image_height=image_height
+            )
+        ]
+        scrape_youtube_thumbnails([(course_id, video1_edx_video_id, 'test-yt-id')])
+        if is_success:
+            mock_logger.info.assert_called_with(
+                'VIDEOS: Scraping youtube video thumbnail for edx_video_id [%s] in course [%s]',
+                video1_edx_video_id,
+                course_id
+            )
+        else:
+            mock_logger.info.assert_called_with(
+                'VIDEOS: Scraping youtube video thumbnail failed for edx_video_id [%s] in course [%s] with error: %s',
+                video1_edx_video_id,
+                course_id,
+                'This image file must be larger than 2 KB.'
+            )
+
+    @patch('contentstore.views.videos.LOGGER')
+    @patch('contentstore.views.videos.download_youtube_video_thumbnail')
+    def test_no_video_thumbnail_downloaded(self, mock_download_youtube_thumbnail, mock_logger):
+        """
+        Test that when no thumbnail is is downloaded, correct error is logged.
+        """
+        mock_download_youtube_thumbnail.return_value = None, None
+        course_id = unicode(self.course.id)
+        video1_edx_video_id = 'test-youtube-video-1'
+
+        # Verify that video1 has no image attached.
+        video1_image_url = get_course_video_image_url(course_id=course_id, edx_video_id=video1_edx_video_id)
+        self.assertIsNone(video1_image_url)
+
+        # Scrape video thumbnail.
+        scrape_youtube_thumbnails([(course_id, video1_edx_video_id, 'test-yt-id')])
+
+        mock_logger.info.assert_called_with(
+            'VIDEOS: Scraping youtube video thumbnail failed for edx_video_id [%s] in course [%s] with error: %s',
+            video1_edx_video_id,
+            course_id,
+            'This image file type is not supported. Supported file types are {supported_file_formats}.'.format(
+                supported_file_formats=settings.VIDEO_IMAGE_SUPPORTED_FILE_FORMATS.keys()
+            )
+        )
+
+        # Verify that no image is attached to video1.
+        video1_image_url = get_course_video_image_url(course_id=course_id, edx_video_id=video1_edx_video_id)
+        self.assertIsNone(video1_image_url)
 
     @override_switch(VIDEO_IMAGE_UPLOAD_ENABLED, True)
     def test_video_image(self):
@@ -817,14 +1083,15 @@ class VideoImageTestCase(VideoUploadTestBase, CourseTestCase):
         ) as image_file:
             self.client.post(video_image_upload_url, {'file': image_file}, format='multipart')
 
-        val_image_url = get_course_video_image_url(course_id=self.course.id, edx_video_id=edx_video_id)
-
         response = self.client.get_json(get_videos_url)
         self.assertEqual(response.status_code, 200)
         response_videos = json.loads(response.content)["videos"]
         for response_video in response_videos:
-            if response_video['edx_video_id'] == edx_video_id:
-                self.assertEqual(response_video['course_video_image_url'], val_image_url)
+            if response_video['edx_video_id'] in [edx_video_id, 'test-youtube-video-2']:
+                self.assertEqual(
+                    response_video['course_video_image_url'],
+                    get_course_video_image_url(course_id=self.course.id, edx_video_id=response_video['edx_video_id'])
+                )
             else:
                 self.assertEqual(response_video['course_video_image_url'], None)
 

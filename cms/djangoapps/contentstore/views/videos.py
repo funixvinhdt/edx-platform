@@ -4,6 +4,8 @@ Views related to the video upload feature
 import csv
 import json
 import logging
+from urlparse import urljoin
+import requests
 from contextlib import closing
 from datetime import datetime, timedelta
 from pytz import UTC
@@ -15,6 +17,7 @@ from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.contrib.staticfiles.storage import staticfiles_storage
 from django.core.files.images import get_image_dimensions
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.urls import reverse
 from django.http import HttpResponse, HttpResponseNotFound
 from django.utils.translation import ugettext as _
@@ -29,6 +32,7 @@ from edxval.api import (
     get_transcript_credentials_state_for_org,
     get_transcript_preferences,
     get_videos_for_course,
+    get_course_video_image_url,
     remove_transcript_preferences,
     remove_video_for_course,
     update_video_image,
@@ -75,6 +79,16 @@ VIDEO_UPLOAD_MAX_FILE_SIZE_GB = 5
 
 # maximum time for video to remain in upload state
 MAX_UPLOAD_HOURS = 24
+
+# Youtube thumbnail sizes.
+# https://img.youtube.com/vi/{youtube_id}/{thumbnail_quality}.jpg
+# High Quality Thumbnail - hqdefault (480x360 pixels)
+# Medium Quality Thumbnail - mqdefault (320x180 pixels)
+# Normal Quality Thumbnail - default (120x90 pixels)
+# And additionally, the next two thumbnails may or may not exist. For HQ videos they exist.
+# Standard Definition Thumbnail - sddefault (640x480 pixels)
+# Maximum Resolution Thumbnail - maxresdefault (1920x1080 pixels)
+YOUTUBE_THUMBNAIL_SIZES = ['maxresdefault', 'sddefault', 'hqdefault', 'mqdefault', 'default']
 
 
 class TranscriptProvider(object):
@@ -187,7 +201,7 @@ def videos_handler(request, course_key_string, edx_video_id=None):
         return videos_post(course, request)
 
 
-def validate_video_image(image_file):
+def validate_video_image(image_file, skip_aspect_ratio=False):
     """
     Validates video image file.
 
@@ -229,7 +243,7 @@ def validate_video_image(image_file):
                 image_file_min_width=settings.VIDEO_IMAGE_MIN_WIDTH,
                 image_file_min_height=settings.VIDEO_IMAGE_MIN_HEIGHT
             )
-        elif image_file_aspect_ratio > settings.VIDEO_IMAGE_ASPECT_RATIO_ERROR_MARGIN:
+        elif not skip_aspect_ratio and image_file_aspect_ratio > settings.VIDEO_IMAGE_ASPECT_RATIO_ERROR_MARGIN:
             error = _('This image file must have an aspect ratio of {video_image_aspect_ratio_text}.').format(
                 video_image_aspect_ratio_text=settings.VIDEO_IMAGE_ASPECT_RATIO_TEXT
             )
@@ -835,3 +849,61 @@ def is_status_update_request(request_data):
     Returns True if `request_data` contains status update else False.
     """
     return any('status' in update for update in request_data)
+
+
+def download_youtube_video_thumbnail(youtube_id):
+    """
+    Download highest resoultion video thumbnail available from youtube.
+    """
+    thumbnail_content = thumbnail_content_type = None
+    # Download highest resoultion thumbnail available.
+    for thumbnail_quality in YOUTUBE_THUMBNAIL_SIZES:
+        thumbnail_url = urljoin('https://img.youtube.com', '/vi/{youtube_id}/{thumbnail_quality}.jpg'.format(
+            youtube_id=youtube_id, thumbnail_quality=thumbnail_quality
+        ))
+        response = requests.get(thumbnail_url)
+        if response.status_code == requests.codes.ok:   # pylint: disable=no-member
+            thumbnail_content = response.content
+            thumbnail_content_type = response.headers['content-type']
+            # If best available resolution is found, skip looking for lower resolutions.
+            break
+    return thumbnail_content, thumbnail_content_type
+
+
+def validate_and_update_video_image(course_key_string, edx_video_id, image_file, image_filename):
+    """
+    Validates image content and updates video image.
+    """
+    error = validate_video_image(image_file, skip_aspect_ratio=True)
+    if error:
+        LOGGER.info(
+            'VIDEOS: Scraping youtube video thumbnail failed for edx_video_id [%s] in course [%s] with error: %s',
+            edx_video_id,
+            course_key_string,
+            error
+        )
+        return
+
+    update_video_image(edx_video_id, course_key_string, image_file, image_filename)
+    LOGGER.info(
+        'VIDEOS: Scraping youtube video thumbnail for edx_video_id [%s] in course [%s]', edx_video_id, course_key_string
+    )
+
+
+def scrape_youtube_thumbnails(videos):
+    """
+    Scrapes youtube thumbnails for given list of videos.
+    """
+    for course_id, edx_video_id, youtube_id in videos:
+        # Scrape when course video image does not exist for edx_video_id.
+        if not get_course_video_image_url(course_id, edx_video_id):
+            thumbnail_content, thumbnail_content_type = download_youtube_video_thumbnail(youtube_id)
+            supported_content_types = {v: k for k, v in settings.VIDEO_IMAGE_SUPPORTED_FILE_FORMATS.iteritems()}
+            image_filename = '{youtube_id}{image_extention}'.format(
+                youtube_id=youtube_id,
+                image_extention=supported_content_types.get(
+                    thumbnail_content_type, supported_content_types['image/jpeg']
+                )
+            )
+            image_file = SimpleUploadedFile(image_filename, thumbnail_content, thumbnail_content_type)
+            validate_and_update_video_image(course_id, edx_video_id, image_file, image_filename)

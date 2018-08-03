@@ -322,7 +322,8 @@ class CourseFields(object):
     video_upload_pipeline = Dict(
         display_name=_("Video Upload Credentials"),
         help=_("Enter the unique identifier for your course's video files provided by edX."),
-        scope=Scope.settings
+        scope=Scope.settings,
+        deprecated=True
     )
     no_grade = Boolean(
         display_name=_("Course Not Graded"),
@@ -1318,6 +1319,7 @@ class CourseDescriptor(CourseFields, SequenceDescriptor, LicenseMixin):
         """
         Returns whether the video pipeline advanced setting is configured for this course.
         """
+        # TODO: Use ammar's flag to determine if we need to care for `self.video_upload_pipeline` or not.
         return VideoUploadsEnabledByDefault.feature_enabled(course_id=self.id) or (
             self.video_upload_pipeline is not None and
             'course_video_upload_token' in self.video_upload_pipeline

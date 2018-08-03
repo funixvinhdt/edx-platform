@@ -753,6 +753,7 @@ def videos_post(course, request):
             ('course_key', unicode(course.id)),
         ]
 
+        # TODO: Use ammar's flag to determine if we need to care for `course_video_upload_token` or not.
         # Only include `course_video_upload_token` if its set, as it won't be required if video uploads
         # are enabled by default.
         course_video_upload_token = course.video_upload_pipeline.get('course_video_upload_token')

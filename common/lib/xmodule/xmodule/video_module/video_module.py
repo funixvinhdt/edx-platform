@@ -102,7 +102,6 @@ _ = lambda text: text
 
 # Waffle switches namespace for videos
 WAFFLE_VIDEOS_NAMESPACE = 'videos'
-WAFFLE_SWITCHES = WaffleSwitchNamespace(name=WAFFLE_VIDEOS_NAMESPACE)
 
 # Waffle switch to enable/disable hls as primary playback
 DEPRECATE_YOUTUBE = 'deprecate_youtube'
@@ -195,22 +194,15 @@ class VideoModule(VideoFields, VideoTranscriptsMixin, VideoStudentViewHandlers, 
         """
         Return True if hls as primary playback enabled else False
         """
-        deprecate_youtube = False
-
         # if `hls` playback itself is disabled then when can't move further
         if not HLSPlaybackEnabledFlag.feature_enabled(self.location.course_key):
             return False
 
-        if WAFFLE_SWITCHES.is_enabled(DEPRECATE_YOUTUBE):
-            deprecate_youtube = True
-        else:
-            waffle_flag = CourseWaffleFlag(
-                WaffleFlagNamespace(name=WAFFLE_VIDEOS_NAMESPACE),
-                DEPRECATE_YOUTUBE
-            )
-            deprecate_youtube = waffle_flag.is_enabled(self.location.course_key)
-
-        return deprecate_youtube
+        # check if hls as primary playback is disabled for this course
+        return CourseWaffleFlag(
+            WaffleFlagNamespace(name=WAFFLE_VIDEOS_NAMESPACE),
+            DEPRECATE_YOUTUBE
+        ).is_enabled(self.location.course_key)
 
     def get_html(self):
 

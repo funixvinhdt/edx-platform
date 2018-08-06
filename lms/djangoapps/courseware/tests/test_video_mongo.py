@@ -34,8 +34,8 @@ from mock import MagicMock, Mock, patch
 from path import Path as path
 
 from openedx.core.lib.tests import attr
-from openedx.core.djangoapps.waffle_utils.testutils import override_waffle_flag
-from waffle.testutils import override_switch
+from openedx.core.djangoapps.waffle_utils.models import WaffleFlagCourseOverrideModel
+from waffle.testutils import override_flag
 from xmodule.contentstore.content import StaticContent
 from xmodule.exceptions import NotFoundError
 from xmodule.modulestore import ModuleStoreEnum
@@ -50,8 +50,6 @@ from xmodule.video_module.video_module import (
     EXPORT_IMPORT_STATIC_DIR,
     DEPRECATE_YOUTUBE,
     WAFFLE_VIDEOS_NAMESPACE,
-    CourseWaffleFlag,
-    WaffleFlagNamespace
 )
 from xmodule.x_module import STUDENT_VIEW
 
@@ -64,8 +62,7 @@ MODULESTORES = {
     ModuleStoreEnum.Type.split: TEST_DATA_SPLIT_MODULESTORE,
 }
 
-DEPRECATE_YOUTUBE_SWITCH = '{}.{}'.format(WAFFLE_VIDEOS_NAMESPACE, DEPRECATE_YOUTUBE)
-DEPRECATE_YOUTUBE_FLAG = DEPRECATE_YOUTUBE_SWITCH
+DEPRECATE_YOUTUBE_FLAG = '{}.{}'.format(WAFFLE_VIDEOS_NAMESPACE, DEPRECATE_YOUTUBE)
 
 TRANSCRIPT_FILE_SRT_DATA = u"""
 1
@@ -108,7 +105,6 @@ class TestVideoYouTube(TestVideo):
                 'sources': sources,
                 'duration': None,
                 'poster': None,
-                'deprecateYoutube': False,
                 'captionDataDir': None,
                 'showCaptions': 'true',
                 'generalSpeed': 1.0,
@@ -129,6 +125,7 @@ class TestVideoYouTube(TestVideo):
                 'completionEnabled': False,
                 'completionPercentage': 0.95,
                 'publishCompletionUrl': self.get_handler_url('publish_completion', ''),
+                'deprecateYoutube': False,
             })),
             'track': None,
             'transcript_download_format': u'srt',
@@ -190,7 +187,6 @@ class TestVideoNonYouTube(TestVideo):
                 'sources': sources,
                 'duration': None,
                 'poster': None,
-                'deprecateYoutube': False,
                 'captionDataDir': None,
                 'showCaptions': 'true',
                 'generalSpeed': 1.0,
@@ -211,6 +207,7 @@ class TestVideoNonYouTube(TestVideo):
                 'completionEnabled': False,
                 'completionPercentage': 0.95,
                 'publishCompletionUrl': self.get_handler_url('publish_completion', ''),
+                'deprecateYoutube': False,
             })),
             'track': None,
             'transcript_download_format': u'srt',
@@ -1002,64 +999,31 @@ class TestGetHtmlMethod(BaseTestXmodule):
 
         self.assertIn("\'poster\': \'null\'", context)
 
+    @patch('xmodule.video_module.video_module.HLSPlaybackEnabledFlag.feature_enabled', Mock(return_value=False))
+    def test_hls_primary_playback_on_toggling_hls_feature(self):
+        """
+        Verify that `deprecateYoutube` is set to `False` if `HLSPlaybackEnabledFlag` is disabled.
+        """
+        video_xml = '<video display_name="Video" download_video="true" edx_video_id="12345-67890">[]</video>'
+        self.initialize_module(data=video_xml)
+        context = self.item_descriptor.render(STUDENT_VIEW).content
+        self.assertIn('"deprecateYoutube": false', context)
+
     @ddt.data(
-        {
-            'hls_playback_enabled': False,
-            'hls_primary_playback_switch_enabled': True,
-            'hls_primary_playback_course_flag_enabled': True,
-            'expected_deprecate_youtube': 'false',
-        },
-        {
-            'hls_playback_enabled': True,
-            'hls_primary_playback_switch_enabled': True,
-            'hls_primary_playback_course_flag_enabled': True,
-            'expected_deprecate_youtube': 'true',
-        },
-        {
-            'hls_playback_enabled': True,
-            'hls_primary_playback_switch_enabled': False,
-            'hls_primary_playback_course_flag_enabled': True,
-            'expected_deprecate_youtube': 'true',
-        },
-        {
-            'hls_playback_enabled': True,
-            'hls_primary_playback_switch_enabled': False,
-            'hls_primary_playback_course_flag_enabled': False,
-            'expected_deprecate_youtube': 'false',
-        },
-        {
-            'hls_playback_enabled': True,
-            'hls_primary_playback_switch_enabled': True,
-            'hls_primary_playback_course_flag_enabled': False,
-            'expected_deprecate_youtube': 'true',
-        },
+        {'course_override': WaffleFlagCourseOverrideModel.ALL_CHOICES.on, 'waffle_enabled': False, 'result': 'true'},
+        {'course_override': WaffleFlagCourseOverrideModel.ALL_CHOICES.off, 'waffle_enabled': True, 'result': 'false'},
     )
-    @ddt.unpack
-    def test_hls_primary_playback_on_toggling_hls_feature(
-        self,
-        hls_playback_enabled,
-        hls_primary_playback_switch_enabled,
-        hls_primary_playback_course_flag_enabled,
-        expected_deprecate_youtube,
-    ):
+    @patch('xmodule.video_module.video_module.HLSPlaybackEnabledFlag.feature_enabled', Mock(return_value=True))
+    def test_deprecate_youtube_course_waffle_flag(self, data):
         """
-        Verify that `deprecateYoutube` is set correctly.
+        Tests various combinations of a `deprecate_youtube` flag being set in waffle and overridden for a course.
         """
-        with patch('xmodule.video_module.video_module.HLSPlaybackEnabledFlag.feature_enabled') as feature_enabled:
-            feature_enabled.return_value = hls_playback_enabled
-            video_xml = '<video display_name="Video" download_video="true" edx_video_id="12345-67890">[]</video>'
-            self.initialize_module(data=video_xml)
-            waffle_flag = CourseWaffleFlag(
-                WaffleFlagNamespace(name=WAFFLE_VIDEOS_NAMESPACE),
-                DEPRECATE_YOUTUBE
-            )
-            with override_switch(DEPRECATE_YOUTUBE_SWITCH, active=hls_primary_playback_switch_enabled), \
-                    override_waffle_flag(waffle_flag, active=hls_primary_playback_course_flag_enabled):
+        with patch.object(WaffleFlagCourseOverrideModel, 'override_value', return_value=data['course_override']):
+            with override_flag(DEPRECATE_YOUTUBE_FLAG, active=data['waffle_enabled']):
+                video_xml = '<video display_name="Video" download_video="true" edx_video_id="12345-67890">[]</video>'
+                self.initialize_module(data=video_xml)
                 context = self.item_descriptor.render(STUDENT_VIEW).content
-                self.assertIn(
-                    '"deprecateYoutube": {}'.format(expected_deprecate_youtube),
-                    context
-                )
+                self.assertIn('"deprecateYoutube": {}'.format(data['result']), context)
 
 
 @attr(shard=7)
@@ -2139,7 +2103,6 @@ class TestVideoWithBumper(TestVideo):
                 'streams': '0.75:jNCf2gIqpeE,1.00:ZwkTiUPN0mg,1.25:rsq9auxASqI,1.50:kMyNdzVHHgg',
                 'sources': sources,
                 'poster': None,
-                'deprecateYoutube': False,
                 'duration': None,
                 'captionDataDir': None,
                 'showCaptions': 'true',
@@ -2161,6 +2124,7 @@ class TestVideoWithBumper(TestVideo):
                 'completionEnabled': False,
                 'completionPercentage': 0.95,
                 'publishCompletionUrl': self.get_handler_url('publish_completion', ''),
+                'deprecateYoutube': False,
             })),
             'track': None,
             'transcript_download_format': u'srt',
@@ -2213,7 +2177,6 @@ class TestAutoAdvanceVideo(TestVideo):
                 'sources': [u'example.mp4', u'example.webm'],
                 'duration': None,
                 'poster': None,
-                'deprecateYoutube': False,
                 'captionDataDir': None,
                 'showCaptions': 'true',
                 'generalSpeed': 1.0,
@@ -2238,6 +2201,7 @@ class TestAutoAdvanceVideo(TestVideo):
                 'completionEnabled': False,
                 'completionPercentage': 0.95,
                 'publishCompletionUrl': self.get_handler_url('publish_completion', ''),
+                'deprecateYoutube': False,
             })),
             'track': None,
             'transcript_download_format': u'srt',

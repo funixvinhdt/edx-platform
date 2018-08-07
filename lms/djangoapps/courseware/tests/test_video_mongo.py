@@ -48,7 +48,7 @@ from xmodule.video_module.transcripts_utils import Transcript, save_to_store, su
 from xmodule.video_module.video_module import (
     EXPORT_IMPORT_COURSE_DIR,
     EXPORT_IMPORT_STATIC_DIR,
-    DEPRECATE_YOUTUBE,
+    PRIORITIZE_HLS,
     WAFFLE_VIDEOS_NAMESPACE,
 )
 from xmodule.x_module import STUDENT_VIEW
@@ -62,7 +62,7 @@ MODULESTORES = {
     ModuleStoreEnum.Type.split: TEST_DATA_SPLIT_MODULESTORE,
 }
 
-DEPRECATE_YOUTUBE_FLAG = '{}.{}'.format(WAFFLE_VIDEOS_NAMESPACE, DEPRECATE_YOUTUBE)
+DEPRECATE_YOUTUBE_FLAG = '{}.{}'.format(WAFFLE_VIDEOS_NAMESPACE, PRIORITIZE_HLS)
 
 TRANSCRIPT_FILE_SRT_DATA = u"""
 1
@@ -125,7 +125,7 @@ class TestVideoYouTube(TestVideo):
                 'completionEnabled': False,
                 'completionPercentage': 0.95,
                 'publishCompletionUrl': self.get_handler_url('publish_completion', ''),
-                'deprecateYoutube': False,
+                'prioritizeHls': False,
             })),
             'track': None,
             'transcript_download_format': u'srt',
@@ -207,7 +207,7 @@ class TestVideoNonYouTube(TestVideo):
                 'completionEnabled': False,
                 'completionPercentage': 0.95,
                 'publishCompletionUrl': self.get_handler_url('publish_completion', ''),
-                'deprecateYoutube': False,
+                'prioritizeHls': False,
             })),
             'track': None,
             'transcript_download_format': u'srt',
@@ -266,7 +266,7 @@ class TestGetHtmlMethod(BaseTestXmodule):
             'completionEnabled': False,
             'completionPercentage': 0.95,
             'publishCompletionUrl': self.get_handler_url('publish_completion', ''),
-            'deprecateYoutube': False,
+            'prioritizeHls': False,
         })
 
     def get_handler_url(self, handler, suffix):
@@ -1002,28 +1002,66 @@ class TestGetHtmlMethod(BaseTestXmodule):
     @patch('xmodule.video_module.video_module.HLSPlaybackEnabledFlag.feature_enabled', Mock(return_value=False))
     def test_hls_primary_playback_on_toggling_hls_feature(self):
         """
-        Verify that `deprecateYoutube` is set to `False` if `HLSPlaybackEnabledFlag` is disabled.
+        Verify that `prioritize_hls` is set to `False` if `HLSPlaybackEnabledFlag` is disabled.
         """
         video_xml = '<video display_name="Video" download_video="true" edx_video_id="12345-67890">[]</video>'
         self.initialize_module(data=video_xml)
         context = self.item_descriptor.render(STUDENT_VIEW).content
-        self.assertIn('"deprecateYoutube": false', context)
+        self.assertIn('"prioritizeHls": false', context)
 
     @ddt.data(
-        {'course_override': WaffleFlagCourseOverrideModel.ALL_CHOICES.on, 'waffle_enabled': False, 'result': 'true'},
-        {'course_override': WaffleFlagCourseOverrideModel.ALL_CHOICES.off, 'waffle_enabled': True, 'result': 'false'},
+        {
+            'course_override': WaffleFlagCourseOverrideModel.ALL_CHOICES.on,
+            'waffle_enabled': False,
+            'youtube': '3_yD_cEKoCk',
+            'hls': ['https://hls.com/hls.m3u8'],
+            'result': 'true'
+        },
+        {
+            'course_override': WaffleFlagCourseOverrideModel.ALL_CHOICES.on,
+            'waffle_enabled': False,
+            'youtube': '',
+            'hls': ['https://hls.com/hls.m3u8'],
+            'result': 'false'
+        },
+        {
+            'course_override': WaffleFlagCourseOverrideModel.ALL_CHOICES.on,
+            'waffle_enabled': False,
+            'youtube': '',
+            'hls': [],
+            'result': 'false'
+        },
+        {
+            'course_override': WaffleFlagCourseOverrideModel.ALL_CHOICES.on,
+            'waffle_enabled': False,
+            'youtube': '3_yD_cEKoCk',
+            'hls': [],
+            'result': 'false'
+        },
+        {
+            'course_override': WaffleFlagCourseOverrideModel.ALL_CHOICES.off,
+            'waffle_enabled': True,
+            'youtube': '3_yD_cEKoCk',
+            'hls': ['https://hls.com/hls.m3u8'],
+            'result': 'false'
+        },
     )
     @patch('xmodule.video_module.video_module.HLSPlaybackEnabledFlag.feature_enabled', Mock(return_value=True))
     def test_deprecate_youtube_course_waffle_flag(self, data):
         """
-        Tests various combinations of a `deprecate_youtube` flag being set in waffle and overridden for a course.
+        Tests various combinations of a `prioritize_hls` flag being set in waffle and overridden for a course.
         """
+        metadata = {
+            'html5_sources': ['http://youtu.be/3_yD_cEKoCk.mp4'] + data['hls'],
+        }
+        video_xml = '<video display_name="Video" edx_video_id="12345-67890" youtube_id_1_0="{}">[]</video>'.format(
+            data['youtube']
+        )
         with patch.object(WaffleFlagCourseOverrideModel, 'override_value', return_value=data['course_override']):
             with override_flag(DEPRECATE_YOUTUBE_FLAG, active=data['waffle_enabled']):
-                video_xml = '<video display_name="Video" download_video="true" edx_video_id="12345-67890">[]</video>'
-                self.initialize_module(data=video_xml)
+                self.initialize_module(data=video_xml, metadata=metadata)
                 context = self.item_descriptor.render(STUDENT_VIEW).content
-                self.assertIn('"deprecateYoutube": {}'.format(data['result']), context)
+                self.assertIn('"prioritizeHls": {}'.format(data['result']), context)
 
 
 @attr(shard=7)
@@ -2124,7 +2162,7 @@ class TestVideoWithBumper(TestVideo):
                 'completionEnabled': False,
                 'completionPercentage': 0.95,
                 'publishCompletionUrl': self.get_handler_url('publish_completion', ''),
-                'deprecateYoutube': False,
+                'prioritizeHls': False,
             })),
             'track': None,
             'transcript_download_format': u'srt',
@@ -2201,7 +2239,7 @@ class TestAutoAdvanceVideo(TestVideo):
                 'completionEnabled': False,
                 'completionPercentage': 0.95,
                 'publishCompletionUrl': self.get_handler_url('publish_completion', ''),
-                'deprecateYoutube': False,
+                'prioritizeHls': False,
             })),
             'track': None,
             'transcript_download_format': u'srt',

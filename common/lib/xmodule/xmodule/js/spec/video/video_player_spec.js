@@ -1077,20 +1077,21 @@ function(VideoPlayer, HLS, _) {
 
             it('loads youtube if flag is disabled', function() {
                 state = jasmine.initializePlayer('video_all.html', {
-                    deprecateYoutube: false,
+                    prioritizeHls: false,
                     streams: '0.5:7tqY6eQzVhE,1.0:cogebirgzzM,1.5:abcdefghijkl'
                 });
-                expect(state.config.deprecateYoutube).toBeFalsy();
+                expect(state.config.prioritizeHls).toBeFalsy();
                 expect(YT.Player).toHaveBeenCalled();
                 expect(state.videoPlayer.player.hls).toBeUndefined();
             });
 
             it('does not load youtube if flag is enabled', function() {
                 state = jasmine.initializePlayer('video_all.html', {
-                    deprecateYoutube: true,
+                    prioritizeHls: true,
+                    streams: '0.5:7tqY6eQzVhE,1.0:cogebirgzzM,1.5:abcdefghijkl',
                     sources: ['/base/fixtures/test.mp4', '/base/fixtures/test.webm', '/base/fixtures/hls/hls.m3u8']
                 });
-                expect(state.config.deprecateYoutube).toBeTruthy();
+                expect(state.config.prioritizeHls).toBeTruthy();
                 expect(YT.Player).not.toHaveBeenCalled();
                 expect(state.videoPlayer.player.hls).toBeDefined();
             });

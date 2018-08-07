@@ -26,7 +26,7 @@ from django.utils.functional import cached_property
 from lxml import etree
 from opaque_keys.edx.locator import AssetLocator
 from openedx.core.djangoapps.video_config.models import HLSPlaybackEnabledFlag
-from openedx.core.djangoapps.waffle_utils import WaffleSwitchNamespace, WaffleFlagNamespace, CourseWaffleFlag
+from openedx.core.djangoapps.waffle_utils import WaffleFlagNamespace, CourseWaffleFlag
 from openedx.core.lib.cache_utils import memoize_in_request_cache
 from openedx.core.lib.license import LicenseMixin
 from xblock.completable import XBlockCompletionMode
@@ -100,11 +100,11 @@ log = logging.getLogger(__name__)
 #  `django.utils.translation.ugettext_noop` because Django cannot be imported in this file
 _ = lambda text: text
 
-# Waffle switches namespace for videos
+# Waffle flags namespace for videos
 WAFFLE_VIDEOS_NAMESPACE = 'videos'
 
-# Waffle switch to enable/disable hls as primary playback
-DEPRECATE_YOUTUBE = 'deprecate_youtube'
+# Waffle flag to enable/disable hls as primary playback
+PRIORITIZE_HLS = 'prioritize_hls'
 
 EXPORT_IMPORT_COURSE_DIR = u'course'
 EXPORT_IMPORT_STATIC_DIR = u'static'
@@ -190,7 +190,7 @@ class VideoModule(VideoFields, VideoTranscriptsMixin, VideoStudentViewHandlers, 
         return track_url, transcript_language, sorted_languages
 
     @cached_property
-    def deprecate_youtube_enabled(self):
+    def prioritize_hls_flag(self):
         """
         Return True if hls as primary playback enabled else False
         """
@@ -201,8 +201,23 @@ class VideoModule(VideoFields, VideoTranscriptsMixin, VideoStudentViewHandlers, 
         # check if hls as primary playback is disabled for this course
         return CourseWaffleFlag(
             WaffleFlagNamespace(name=WAFFLE_VIDEOS_NAMESPACE),
-            DEPRECATE_YOUTUBE
+            PRIORITIZE_HLS
         ).is_enabled(self.location.course_key)
+
+    def prioritize_hls(self, youtube_streams, html5_sources):
+        """
+        Decide whether hls can be prioritized as primary playback or not.
+
+        If both the youtube and hls sources are present then make decision on flag
+        If only either youtube or hls is present then play whichever is present
+        """
+        yt_present = bool(youtube_streams.strip())
+        hls_present = any(source for source in html5_sources if source.strip().endswith('.m3u8'))
+
+        if yt_present and hls_present:
+            return self.prioritize_hls_flag
+
+        return False
 
     def get_html(self):
 
@@ -385,7 +400,7 @@ class VideoModule(VideoFields, VideoTranscriptsMixin, VideoStudentViewHandlers, 
             # this user, based on what was recorded the last time we saw the
             # user, and defaulting to True.
             'recordedYoutubeIsAvailable': self.youtube_is_available,
-            'deprecateYoutube': self.deprecate_youtube_enabled,
+            'prioritizeHls': self.prioritize_hls(self.youtube_streams, sources),
         }
 
         bumperize(self)

@@ -229,7 +229,7 @@ class VideoThumbnailSetting(ConfigurationModel):
 
 class UpdatedCourseVideos(TimeStampedModel):
     """
-    Temporary model to persist the video IDs which have been enqueued for updation of video thumbnails.
+    Temporary model to persist the video IDs which have been enqueued for update of video thumbnails.
     """
     course_id = CourseKeyField(db_index=True, primary_key=True, max_length=255)
     edx_video_id = models.CharField(

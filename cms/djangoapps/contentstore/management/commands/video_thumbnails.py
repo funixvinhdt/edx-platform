@@ -54,7 +54,7 @@ class Command(BaseCommand):
             log.info(
                 ('[Video Thumbnails] Videos(total): %s, '
                  'Videos(updated): %s, Videos(non-updated): %s, '
-                 'Videos(updation-in-process): %s'),
+                 'Videos(update-in-process): %s'),
                 len(all_course_video_ids),
                 len(updated_course_videos),
                 len(non_updated_course_videos),
@@ -65,9 +65,9 @@ class Command(BaseCommand):
             course_video_batch = get_course_video_ids_with_youtube_profile(validated_course_strings)
             commit = command_settings.commit
 
-        return course_video_batch, commit
+        return course_video_batch
 
-    def _parse_course_strings(course_key_strings):
+    def _parse_course_strings(self, course_key_strings):
         """
         Parses and validates the list of course key strings.
         """
@@ -99,7 +99,7 @@ class Command(BaseCommand):
                 .format(course_videos=text_type(course_video_batch))
             )
 
-        if commit and command_settings.all_videos:
+        if commit and command_settings.all_course_videos:
             UpdatedCourseVideos.objects.bulk_create([
                 UpdatedCourseVideos(course_id=course_video_id[0],
                                     edx_video_id=course_video_id[1],
